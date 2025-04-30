@@ -18,7 +18,7 @@ load_dotenv()
 CLOUDFLARE_AUTH_TOKEN = os.getenv("CLOUDFLARE_AUTH_TOKEN", "")
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 
-CLOUDFLARE_MODEL = "@cf/google/gemma-3-12b-it"  # Model for Cloudflare AI
+CLOUDFLARE_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct"  # Model for Cloudflare AI
 
 
 def remove_first_and_last_lines(text):
@@ -73,6 +73,35 @@ def cloudflare_chat_completion(auth_token, account_id, model, messages):
     except requests.exceptions.RequestException as e:
         return {"error": str(e)}
 
+def save_to_next_available_file(string_to_save, directory=".", extension="json"):
+    """
+    Saves the provided string to a file with an incrementing filename format ("n.json").
+    The function ensures the filename does not overwrite any existing files by checking the next available number.
+    
+    Parameters:
+        string_to_save (str): The string content to save in the file.
+        directory (str): The directory where the file will be saved. Defaults to the current directory.
+        extension (str): The file extension to use. Defaults to "json".
+    
+    Returns:
+        str: The name of the file created.
+    """
+    # Initialize the counter for filenames
+    counter = 1
+    
+    # Generate filenames incrementally until we find an available one
+    while True:
+        filename = f"{counter}.{extension}"
+        file_path = os.path.join(directory, filename)
+        # Check if the file already exists
+        if not os.path.exists(file_path):
+            # File doesn't exist; create and save the content
+            with open(file_path, "w", encoding="utf-8") as file:
+                file.write(string_to_save)
+            return filename  # Return the created filename
+        counter += 1  # Increment the counter for the next file
+
+
 class CloudflareChatApp:
     def __init__(self, root):
         """Initialize the Tkinter application with UI components and two tables."""
@@ -113,7 +142,12 @@ class CloudflareChatApp:
 3. 当出现熟悉公式时计算公式，例如：输入 1000*10 ，返回 10000。
 # 科目要求
 1. 一级科目选择要遵守最新的中国的企业会计准则。 参考（https://www.zkemu.com/acc4/u/kjkm/）
-
+# Json要求
+1. “借方合计”和“贷方合计”使用数字格式，非字符串。
+2. 对Json对象进行计算。“借方合计”和“贷方合计”为“明细"中的合计（相加）。校验Json对象是否符合Json的格式要求。
+如果“借方合计”和“贷方合计”不一致则代表借贷不平衡（“借方合计”和“贷方合计”是汇总“明细”里面的金额，请执行校验步骤避免错误）。
+3. 使用计算器用加法分别计算"借方金额"和"贷方金额"的和，保存在“合计”中的“借方合计”和“贷方合计”。
+4. 比较合计中的"借方合计”和“贷方合计” ，如果一致则“平衡”是 true，否则为 false 。保存在“合计“中。
 
 Json示例：
 {
@@ -135,12 +169,12 @@ Json示例：
 ],
 "合计": {
 "借方合计": 52100,
-"贷方合计": 52100
+"贷方合计": 52100,
+ "平衡“: true
 }
 }
 。
-对Json对象进行计算。“借方合计”和“贷方合计”为“明细"中的合计金额。
-如果“借方合计”和“贷方合计”不一致则代表借贷不平衡（“借方合计”和“贷方合计”是汇总“明细”里面的金额，请执行校验步骤避免错误）。
+
 
 表格示例：
 
@@ -322,6 +356,8 @@ please only return the json object in the input
         sample_json = temp
         self.text_areas[2].delete(1.0, tk.END)
         self.text_areas[2].insert(tk.END, temp)
+        save_to_next_available_file(temp)
+        self.load_all_json_files()
         self.update_table(sample_json, self.tree_1)
 
     def update_table_2_test(self):
@@ -419,8 +455,8 @@ please only return the json object in the input
         self.buttons[button_idx].config(state="normal")
     ## --- Table Functions ---
     def calculate_total(self, table_rows):
-        total_debit = sum(int(row.get("借方金额")) if row.get("借方金额") else 0 for row in table_rows)
-        total_credit = sum(int(row.get("贷方金额")) if row.get("贷方金额") else 0 for row in table_rows)
+        total_debit = sum(float(row.get("借方金额")) if row.get("借方金额") else 0 for row in table_rows)
+        total_credit = sum(float(row.get("贷方金额")) if row.get("贷方金额") else 0 for row in table_rows)
         return total_debit, total_credit
 
     def init_json(self, table_rows):
@@ -446,26 +482,32 @@ please only return the json object in the input
         return total_debit, total_credit
 
     def load_all_json_files(self):
-        print("R")
+        
         """Load all JSON files from the current directory and display their data in the table."""
         if not hasattr(self, 'tree_2'):
             return  # Safeguard in case tree is not initialized
         all_data = []
         current_dir = Path.cwd()
         json_files = current_dir.glob("*.json")
-        print(json_files)
+        
 
         for json_file in json_files:
             try:
                 with open(json_file, 'r', encoding='utf-8') as f:
+                    n = os.path.basename(json_file).split('.')[0]
                     file_data = json.load(f)
                     if "明细" in file_data:
                         all_data.extend(file_data["明细"])
+                        for item in file_data["明细"]:
+                            if "编号" in item:
+                                item["编号"] = n
+                        
+                    
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load {json_file.name}: {str(e)}")
 
         if all_data:
-            print(all_data)
+            
             self.init_json(all_data)
         else:
             messagebox.showinfo("Info", "No valid JSON data found to display in the table.")
